@@ -1,105 +1,116 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
+import plotly.express as px
+import json
+import requests
 
 from sklearn.impute import SimpleImputer
 from feature_engine.outliers import Winsorizer
 
 st.set_page_config(page_title="Diwali Sales Dashboard", layout="wide")
 
-# ------------------ TITLE ------------------
-st.title("🪔 Diwali Sales Interactive Dashboard")
+st.title("🪔 Diwali Sales Dashboard")
 
-# ------------------ FILE UPLOAD ------------------
-uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
+# ------------------ LOAD DATA ------------------
+file = st.file_uploader("Upload Dataset", type=["csv"])
 
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file, encoding='latin-1')
+if file:
+    df = pd.read_csv(file, encoding='latin-1')
 
     # ------------------ CLEANING ------------------
     df = df.drop(["Status", "unnamed1"], axis=1, errors='ignore')
     df = df.drop_duplicates()
     df["User_ID"] = df["User_ID"].astype(str)
 
-    # Missing values
     imputer = SimpleImputer(strategy='median')
     df["Amount"] = imputer.fit_transform(df[["Amount"]])
 
-    # Outlier handling
     winsor = Winsorizer(capping_method='iqr', tail='both', fold=1.5, variables=['Amount'])
     df['Amount'] = winsor.fit_transform(df[['Amount']])
 
-    # ------------------ SIDEBAR FILTERS ------------------
-    st.sidebar.header("🔍 Filter Data")
+    # ------------------ FILTERS ------------------
+    st.sidebar.header("Filters")
 
-    states = st.sidebar.multiselect("Select State", df['State'].unique(), default=df['State'].unique())
-    gender = st.sidebar.multiselect("Select Gender", df['Gender'].unique(), default=df['Gender'].unique())
-    occupation = st.sidebar.multiselect("Select Occupation", df['Occupation'].unique(), default=df['Occupation'].unique())
+    states = st.sidebar.multiselect("State", df['State'].unique(), df['State'].unique())
+    gender = st.sidebar.multiselect("Gender", df['Gender'].unique(), df['Gender'].unique())
 
-    filtered_df = df[
-        (df['State'].isin(states)) &
-        (df['Gender'].isin(gender)) &
-        (df['Occupation'].isin(occupation))
-    ]
+    df = df[(df['State'].isin(states)) & (df['Gender'].isin(gender))]
 
     # ------------------ KPIs ------------------
-    st.subheader("📊 Key Metrics")
-
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Total Sales", f"{int(filtered_df['Amount'].sum()):,}")
-    col2.metric("Average Sales", f"{int(filtered_df['Amount'].mean()):,}")
-    col3.metric("Total Orders", filtered_df.shape[0])
+    col1.metric("Total Sales", f"{int(df['Amount'].sum()):,}")
+    col2.metric("Average Sales", f"{int(df['Amount'].mean()):,}")
+    col3.metric("Orders", df.shape[0])
 
-    # ------------------ CHART SELECTION ------------------
-    st.subheader("📈 Dynamic Analysis")
+    # ------------------ 🇮🇳 INDIA MAP ------------------
+    st.subheader("🇮🇳 India State-wise Sales")
 
-    chart_option = st.selectbox(
-        "Select Analysis Type",
-        ["State-wise Sales", "Gender vs Sales", "Occupation Sales", "Product Category"]
+    state_sales = df.groupby('State')['Amount'].sum().reset_index()
+
+    # Load India GeoJSON
+    geojson_url = "https://raw.githubusercontent.com/geohacker/india/master/state/india_telengana.geojson"
+    geojson = requests.get(geojson_url).json()
+
+    # IMPORTANT: State names must match GeoJSON
+    fig_map = px.choropleth(
+        state_sales,
+        geojson=geojson,
+        locations='State',
+        featureidkey="properties.NAME_1",
+        color='Amount',
+        color_continuous_scale="Blues",
+        title="Sales by State"
     )
 
-    fig, ax = plt.subplots()
+    fig_map.update_geos(fitbounds="locations", visible=False)
 
-    if chart_option == "State-wise Sales":
-        data = filtered_df.groupby('State')['Amount'].sum().sort_values(ascending=False).head(10)
-        data.plot(kind='bar', ax=ax)
-        plt.xticks(rotation=45)
+    st.plotly_chart(fig_map, use_container_width=True)
 
-    elif chart_option == "Gender vs Sales":
-        data = filtered_df.groupby('Gender')['Amount'].sum()
-        data.plot(kind='bar', ax=ax)
+    # ------------------ 📊 INTERACTIVE CHART ------------------
+    st.subheader("📊 Analysis")
 
-    elif chart_option == "Occupation Sales":
-        data = filtered_df.groupby('Occupation')['Amount'].sum().sort_values(ascending=False)
-        data.plot(kind='bar', ax=ax)
-        plt.xticks(rotation=45)
+    option = st.selectbox(
+        "Select Analysis",
+        ["State Sales", "Gender Sales", "Occupation Sales", "Product Category"]
+    )
 
-    elif chart_option == "Product Category":
-        data = filtered_df.groupby('Product_Category')['Amount'].sum().sort_values(ascending=False)
-        data.plot(kind='bar', ax=ax)
-        plt.xticks(rotation=90)
+    if option == "State Sales":
+        data = df.groupby('State')['Amount'].sum().reset_index()
+        fig = px.bar(data, x='State', y='Amount', color='Amount')
 
-    st.pyplot(fig)
+    elif option == "Gender Sales":
+        data = df.groupby('Gender')['Amount'].sum().reset_index()
+        fig = px.pie(data, names='Gender', values='Amount')
 
-    # ------------------ RAW DATA ------------------
-    with st.expander("📄 View Raw Data"):
-        st.write(filtered_df)
+    elif option == "Occupation Sales":
+        data = df.groupby('Occupation')['Amount'].sum().reset_index()
+        fig = px.bar(data, x='Occupation', y='Amount', color='Amount')
 
-    # ------------------ DOWNLOAD BUTTON ------------------
-    csv = filtered_df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download Cleaned Data", csv, "cleaned_data.csv", "text/csv")
+    else:
+        data = df.groupby('Product_Category')['Amount'].sum().reset_index()
+        fig = px.bar(data, x='Product_Category', y='Amount', color='Amount')
 
-    # ------------------ INSIGHTS ------------------
-    st.subheader("🎯 Key Insights")
+    st.plotly_chart(fig, use_container_width=True)
 
-    top_state = filtered_df.groupby('State')['Amount'].sum().idxmax()
-    top_product = filtered_df.groupby('Product_Category')['Amount'].sum().idxmax()
+    # ------------------ 🤖 AI INSIGHTS ------------------
+    st.subheader("AI Insights")
 
-    st.success(f"Top performing state: {top_state}")
-    st.success(f"Most sold product category: {top_product}")
+    top_state = state_sales.sort_values(by="Amount", ascending=False).iloc[0]['State']
+    top_product = df.groupby('Product_Category')['Amount'].sum().idxmax()
+    top_gender = df.groupby('Gender')['Amount'].sum().idxmax()
+
+    st.success(f"Top State: {top_state}")
+    st.info(f"Top Product Category: {top_product}")
+    st.warning(f"Top Buyers: {top_gender}")
+
+    # ------------------ DOWNLOAD ------------------
+    st.download_button(
+        "Download Cleaned Data",
+        df.to_csv(index=False),
+        "cleaned_data.csv"
+    )
 
 else:
-    st.info("Please upload your dataset to start analysis.")
+    st.info("Upload dataset to begin")
